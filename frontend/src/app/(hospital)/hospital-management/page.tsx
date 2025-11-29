@@ -17,7 +17,6 @@ import {
 import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
 import Link from "next/link";
-import { generateSurgeForecasts, generateRecommendations } from "@/lib/mockData";
 
 export default function HospitalDashboardPage() {
     const { user, loading: authLoading } = useAuth();
@@ -69,43 +68,8 @@ export default function HospitalDashboardPage() {
                 }
             }
 
-            // If no hospital_id, use dummy data only
             if (!hospitalId) {
-                console.log("No hospital_id - using dummy data");
-                const mockForecasts = generateSurgeForecasts();
-                const mockRecs = generateRecommendations();
-                const today = new Date();
-                const twoDaysLater = new Date(today.getTime() + 2 * 24 * 60 * 60 * 1000);
-                
-                setStats({
-                    totalPatients: 1247,
-                    totalConsultations: 342,
-                    todayConsultations: 18,
-                    pendingConsultations: 8,
-                    highRiskCount: 12
-                });
-                
-                setSurgeAlerts(mockForecasts
-                    .filter(f => {
-                        const forecastDate = new Date(f.date);
-                        return forecastDate <= twoDaysLater && f.percentageIncrease > 30;
-                    })
-                    .map(f => ({
-                        department: f.department,
-                        date: f.date,
-                        increase_percent: f.percentageIncrease,
-                        from: f.baselineVolume,
-                        to: f.predictedVolume
-                    }))
-                );
-                
-                setRecentConsultations([]);
-                setRecommendationsCount({
-                    total: mockRecs.length,
-                    critical: mockRecs.filter(r => r.priority === "critical").length,
-                    high: mockRecs.filter(r => r.priority === "high").length
-                });
-                
+                setError("No hospital associated with your account. Please contact support.");
                 setLoading(false);
                 return;
             }
@@ -121,48 +85,14 @@ export default function HospitalDashboardPage() {
                 api.getRecommendationsStats(hospitalId)
             ]);
 
-            // Process results - use dummy data as fallback
-            const patientsCount = results[0].status === "fulfilled" ? results[0].value : { count: 1247 };
-            const consultationsStats = results[1].status === "fulfilled" ? results[1].value : { total: 342, today: 18 };
-            const highRiskCount = results[2].status === "fulfilled" ? results[2].value : { count: 12 };
-            const pendingReviewCount = results[3].status === "fulfilled" ? results[3].value : { count: 8 };
-            
-            // Use dummy surge alerts if API fails
-            let alertsData = results[4].status === "fulfilled" ? results[4].value : { alerts: [] };
-            if (!alertsData.alerts || alertsData.alerts.length === 0) {
-                const mockForecasts = generateSurgeForecasts();
-                const today = new Date();
-                const twoDaysLater = new Date(today.getTime() + 2 * 24 * 60 * 60 * 1000);
-                alertsData = {
-                    alerts: mockForecasts
-                        .filter(f => {
-                            const forecastDate = new Date(f.date);
-                            return forecastDate <= twoDaysLater && f.percentageIncrease > 30;
-                        })
-                        .map(f => ({
-                            department: f.department,
-                            date: f.date,
-                            increase_percent: f.percentageIncrease,
-                            from: f.baselineVolume,
-                            to: f.predictedVolume
-                        }))
-                };
-            }
-            
+            // Process results - use real API data only
+            const patientsCount = results[0].status === "fulfilled" ? results[0].value : { count: 0 };
+            const consultationsStats = results[1].status === "fulfilled" ? results[1].value : { total: 0, today: 0 };
+            const highRiskCount = results[2].status === "fulfilled" ? results[2].value : { count: 0 };
+            const pendingReviewCount = results[3].status === "fulfilled" ? results[3].value : { count: 0 };
+            const alertsData = results[4].status === "fulfilled" ? results[4].value : { alerts: [] };
             const consultationsData = results[5].status === "fulfilled" ? results[5].value : [];
-            
-            // Use dummy recommendations if API fails
-            let recommendationsStats = results[6].status === "fulfilled" ? results[6].value : { total: 0, critical: 0, high: 0 };
-            if (recommendationsStats.total === 0) {
-                const mockRecs = generateRecommendations();
-                recommendationsStats = {
-                    total: mockRecs.length,
-                    critical: mockRecs.filter(r => r.priority === "critical").length,
-                    high: mockRecs.filter(r => r.priority === "high").length,
-                    medium: mockRecs.filter(r => r.priority === "medium").length,
-                    low: mockRecs.filter(r => r.priority === "low").length
-                };
-            }
+            const recommendationsStats = results[6].status === "fulfilled" ? results[6].value : { total: 0, critical: 0, high: 0 };
 
             // Log any failures
             results.forEach((result, idx) => {

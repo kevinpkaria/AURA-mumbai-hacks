@@ -58,6 +58,23 @@ async def get_hospital_recommendations(
     db: AsyncSession = Depends(get_db)
 ):
     """Get recommendations for a hospital with filtering"""
+    from app.services.ai_agents import OperationsAgent
+    from app.core.logging_config import get_logger
+    
+    logger = get_logger("recommendations")
+    
+    # Check if recommendations exist, if not generate them
+    count_result = await db.execute(
+        select(func.count(Recommendation.id)).where(Recommendation.hospital_id == hospital_id)
+    )
+    rec_count = count_result.scalar() or 0
+    
+    if rec_count == 0:
+        logger.info(f"No recommendations found for hospital {hospital_id}, generating on-demand...")
+        operations_agent = OperationsAgent(db)
+        result = await operations_agent.generate_recommendations(hospital_id)
+        logger.info(f"Generated {result.get('recommendations_created', 0)} recommendations")
+    
     query = select(Recommendation).where(Recommendation.hospital_id == hospital_id)
     
     if priority:

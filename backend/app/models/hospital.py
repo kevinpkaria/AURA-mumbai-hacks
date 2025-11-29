@@ -18,6 +18,7 @@ class Hospital(Base):
     country = Column(String, nullable=False, default="India")
     phone = Column(String, nullable=True)
     email = Column(String, nullable=True)
+    onboarding_completed = Column(String, nullable=True, default="false")  # JSON string with onboarding data
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships

@@ -26,11 +26,11 @@ export default function ConsultationPage() {
 
     const loadConsultation = async () => {
         try {
-            const cons = await api.getConsultation(parseInt(params.id as string));
+            const cons: any = await api.getConsultation(parseInt(params.id as string));
             setConsultation(cons);
             
             // Load messages
-            const msgs = await api.getConsultationMessages(parseInt(params.id as string));
+            const msgs = (await api.getConsultationMessages(parseInt(params.id as string))) as any[];
             cons.messages = msgs.map((m: any) => {
                 // Map message roles for display
                 let role = m.sender_role;
@@ -210,6 +210,100 @@ export default function ConsultationPage() {
                                                     ? JSON.stringify(enhancedSummary.overallAssessment, null, 2)
                                                     : String(enhancedSummary.overallAssessment)}
                                             </p>
+                                        </div>
+                                    )}
+
+                                    {/* Risk Analysis */}
+                                    {enhancedSummary.riskAnalysis && (
+                                        <div className="p-4 bg-red-50 rounded-lg border border-red-100 space-y-2">
+                                            <p className="text-sm font-semibold text-red-900">
+                                                Risk Analysis
+                                            </p>
+                                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                                                <div>
+                                                    <p className="text-muted-foreground">
+                                                        Requires Physical Exam
+                                                    </p>
+                                                    <p className="font-medium">
+                                                        {enhancedSummary.riskAnalysis
+                                                            .requiresPhysicalExamination
+                                                            ? "Yes"
+                                                            : "No"}
+                                                    </p>
+                                                </div>
+                                                <div>
+                                                    <p className="text-muted-foreground">
+                                                        Risk Level
+                                                    </p>
+                                                    <p className="font-medium capitalize">
+                                                        {enhancedSummary.riskAnalysis.riskLevel}
+                                                    </p>
+                                                </div>
+                                                <div>
+                                                    <p className="text-muted-foreground">
+                                                        Probability of Admit
+                                                    </p>
+                                                    <p className="font-medium">
+                                                        {typeof enhancedSummary.riskAnalysis
+                                                            .probabilityOfAdmit === "number"
+                                                            ? `${Math.round(
+                                                                  enhancedSummary.riskAnalysis
+                                                                      .probabilityOfAdmit * 100
+                                                              )}%`
+                                                            : "N/A"}
+                                                    </p>
+                                                </div>
+                                            </div>
+                                            {/* Department & predicted medications, if provided */}
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+                                                {Array.isArray(
+                                                    enhancedSummary.riskAnalysis
+                                                        .department
+                                                ) &&
+                                                    enhancedSummary.riskAnalysis
+                                                        .department.length >
+                                                        0 && (
+                                                        <div>
+                                                            <p className="text-muted-foreground">
+                                                                Department
+                                                            </p>
+                                                            <p className="font-medium">
+                                                                {enhancedSummary.riskAnalysis.department.join(
+                                                                    ", "
+                                                                )}
+                                                            </p>
+                                                        </div>
+                                                    )}
+                                                {Array.isArray(
+                                                    enhancedSummary
+                                                        .riskAnalysis
+                                                        .predictedMedications
+                                                ) &&
+                                                    enhancedSummary
+                                                        .riskAnalysis
+                                                        .predictedMedications
+                                                        .length > 0 && (
+                                                        <div>
+                                                            <p className="text-muted-foreground">
+                                                                Predicted
+                                                                medication
+                                                            </p>
+                                                            <p className="font-medium">
+                                                                {enhancedSummary.riskAnalysis.predictedMedications.join(
+                                                                    ", "
+                                                                )}
+                                                            </p>
+                                                        </div>
+                                                    )}
+                                            </div>
+                                            {enhancedSummary.riskAnalysis.explanation && (
+                                                <p className="text-xs text-red-900">
+                                                    {
+                                                        enhancedSummary.riskAnalysis
+                                                            .explanation
+                                                    }
+                                                </p>
+                                            )}
                                         </div>
                                     )}
 

@@ -4,9 +4,15 @@ import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { TrendingUp, FileText, Database, BarChart3 } from "lucide-react";
+import { TrendingUp, FileText, Database, BarChart3, Gauge } from "lucide-react";
 
 const subSections = [
+    {
+        name: "Command Center",
+        href: "/hospital-management/resource-management/command-center",
+        icon: Gauge,
+        description: "Single view of critical actions"
+    },
     {
         name: "Surge Prediction",
         href: "/hospital-management/resource-management/surge-prediction",
@@ -14,10 +20,16 @@ const subSections = [
         description: "7-day forecasts and AI predictions"
     },
     {
-        name: "Recommendations",
-        href: "/hospital-management/resource-management/recommendations",
-        icon: FileText,
-        description: "AI-generated action items"
+        name: "Staff Management",
+        href: "/hospital-management/resource-management/staff-management",
+        icon: BarChart3,
+        description: "Past and projected staffing across departments"
+    },
+    {
+        name: "Supplies Management",
+        href: "/hospital-management/resource-management/supplies-management",
+        icon: Database,
+        description: "Inventory levels and AI-recommended stock"
     },
     {
         name: "Data Sources",

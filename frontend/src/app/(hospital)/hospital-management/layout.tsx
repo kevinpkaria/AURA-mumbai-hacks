@@ -7,6 +7,8 @@ import { cn } from "@/lib/utils";
 import { LayoutDashboard, TrendingUp, Menu, X, LogOut, MessageSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
+import { api } from "@/lib/api";
+import { useRouter } from "next/navigation";
 
 const sections = [
     {
@@ -17,7 +19,7 @@ const sections = [
     },
     {
         name: "Resource Management",
-        href: "/hospital-management/resource-management/surge-prediction",
+        href: "/hospital-management/resource-management/command-center",
         icon: TrendingUp,
         description: "AI-powered surge prediction and resource allocation"
     },
@@ -37,11 +39,49 @@ export default function HospitalManagementLayout({
     const pathname = usePathname();
     const { logout, user } = useAuth();
     const [sidebarOpen, setSidebarOpen] = React.useState(false);
+    const [onboardingChecked, setOnboardingChecked] = React.useState(false);
+    const [needsOnboarding, setNeedsOnboarding] = React.useState(false);
+
+    const router = useRouter();
 
     const handleLogout = () => {
         logout();
         window.location.href = "/login";
     };
+
+    // Check onboarding status
+    React.useEffect(() => {
+        const checkOnboarding = async () => {
+            if (!user || pathname === "/hospital-management/onboarding") {
+                setOnboardingChecked(true);
+                return;
+            }
+
+            try {
+                let hospitalId = user.hospital_id;
+                if (!hospitalId && user.role === "admin") {
+                    const hospitals = await api.getHospitals();
+                    if (hospitals && hospitals.length > 0) {
+                        hospitalId = hospitals[0].id;
+                    }
+                }
+
+                if (hospitalId) {
+                    const status = await api.getHospitalOnboardingStatus(hospitalId);
+                    if (!status.completed) {
+                        setNeedsOnboarding(true);
+                        router.push("/hospital-management/onboarding");
+                    }
+                }
+            } catch (error) {
+                console.error("Failed to check onboarding status:", error);
+            } finally {
+                setOnboardingChecked(true);
+            }
+        };
+
+        checkOnboarding();
+    }, [user, pathname, router]);
 
     return (
         <div className="min-h-screen bg-background">
@@ -135,8 +175,8 @@ export default function HospitalManagementLayout({
                                 <span className="text-white text-xs font-bold">N</span>
                             </div>
                             <p className="text-xs text-gray-500 dark:text-gray-400 font-medium">
-                                © 2025 AURA Healthtech
-                            </p>
+                            © 2025 AURA Healthtech
+                        </p>
                         </div>
                     </div>
                 </div>
@@ -173,9 +213,11 @@ export default function HospitalManagementLayout({
                         <span className="hidden sm:inline">Sign Out</span>
                     </Button>
                 </header>
+                {onboardingChecked && (
                 <div className="container mx-auto p-6 lg:p-8">
                     {children}
                 </div>
+                )}
             </main>
         </div>
     );

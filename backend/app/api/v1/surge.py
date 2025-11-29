@@ -118,6 +118,10 @@ async def get_hospital_48h_surge_alerts(
     db: AsyncSession = Depends(get_db)
 ):
     """Get critical surge alerts for next 48 hours"""
+    from app.services.ai_agents import SurgeAgent
+    from app.core.logging_config import get_logger
+    
+    logger = get_logger("surge")
     today = date.today()
     two_days_later = today + timedelta(days=2)
     
@@ -142,13 +146,31 @@ async def get_hospital_48h_surge_alerts(
     )
     predictions = result.scalars().all()
     
+    # If no predictions exist, generate them on-demand
+    if not predictions:
+        logger.info(f"No predictions found for {city}, generating on-demand...")
+        surge_agent = SurgeAgent(db)
+        await surge_agent.compute_daily_predictions(city, hospital_id)
+        
+        # Re-fetch predictions
+        result = await db.execute(
+            select(SurgePrediction).where(
+                and_(
+                    SurgePrediction.city == city,
+                    SurgePrediction.date >= today,
+                    SurgePrediction.date <= two_days_later
+                )
+            ).order_by(SurgePrediction.date)
+        )
+        predictions = result.scalars().all()
+    
     alerts = []
     for pred in predictions:
         footfall = pred.footfall_forecast or {}
         for dept, data in footfall.items():
             if isinstance(data, dict):
                 increase_percent = data.get("percentageIncrease", 0)
-                if increase_percent > 40:  # Critical threshold
+                if increase_percent > 30:  # Critical threshold (lowered from 40)
                     alerts.append({
                         "department": dept,
                         "date": pred.date.isoformat(),
@@ -157,6 +179,7 @@ async def get_hospital_48h_surge_alerts(
                         "to": data.get("predicted", 0)
                     })
     
+    logger.info(f"Found {len(alerts)} critical alerts for hospital {hospital_id}")
     return {
         "window": "next_48_hours",
         "alerts": alerts
@@ -171,7 +194,15 @@ async def get_hospital_forecast(
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get 7-day forecast for hospital"""
+    """Get 7-day forecast for hospital.
+
+    We recompute surge predictions on every request so the forecast
+    reflects the latest daily signals (AQI, festivals, etc.).
+    """
+    from app.services.ai_agents import SurgeAgent
+    from app.core.logging_config import get_logger
+    
+    logger = get_logger("surge")
     today = date.today()
     end_date = today + timedelta(days=days)
     
@@ -183,6 +214,11 @@ async def get_hospital_forecast(
         raise HTTPException(status_code=404, detail="Hospital not found")
     
     city = hospital.city
+
+    # Always recompute predictions so each day's forecast can change as inputs change
+    logger.info(f"[Forecast] Recomputing daily surge predictions for city={city}, hospital={hospital_id}")
+    surge_agent = SurgeAgent(db)
+    await surge_agent.compute_daily_predictions(city, hospital_id)
     
     result = await db.execute(
         select(SurgePrediction).where(
@@ -225,6 +261,10 @@ async def get_hospital_department_forecast(
     db: AsyncSession = Depends(get_db)
 ):
     """Get department-wise surge forecast"""
+    from app.services.ai_agents import SurgeAgent
+    from app.core.logging_config import get_logger
+    
+    logger = get_logger("surge")
     today = date.today()
     seven_days_later = today + timedelta(days=7)
     
@@ -248,6 +288,24 @@ async def get_hospital_department_forecast(
         ).order_by(SurgePrediction.date)
     )
     predictions = result.scalars().all()
+    
+    # If no predictions exist, generate them on-demand
+    if not predictions:
+        logger.info(f"No predictions found for {city}, generating on-demand...")
+        surge_agent = SurgeAgent(db)
+        await surge_agent.compute_daily_predictions(city, hospital_id)
+        
+        # Re-fetch predictions
+        result = await db.execute(
+            select(SurgePrediction).where(
+                and_(
+                    SurgePrediction.city == city,
+                    SurgePrediction.date >= today,
+                    SurgePrediction.date <= seven_days_later
+                )
+            ).order_by(SurgePrediction.date)
+        )
+        predictions = result.scalars().all()
     
     # Track max surge per department
     dept_surges: Dict[str, Dict[str, Any]] = {}
@@ -281,6 +339,10 @@ async def get_hospital_festivals(
     db: AsyncSession = Depends(get_db)
 ):
     """Get upcoming festivals affecting the hospital"""
+    from app.services.external_apis import get_festival_calendar
+    from app.core.logging_config import get_logger
+    
+    logger = get_logger("surge")
     today = date.today()
     thirty_days_later = today + timedelta(days=30)
     
@@ -291,35 +353,25 @@ async def get_hospital_festivals(
     if not hospital:
         raise HTTPException(status_code=404, detail="Hospital not found")
     
-    city = hospital.city
+    # Get festivals directly from external API
+    festival_list = get_festival_calendar()
     
-    # Get predictions with festivals
-    result = await db.execute(
-        select(SurgePrediction).where(
-            and_(
-                SurgePrediction.city == city,
-                SurgePrediction.date >= today,
-                SurgePrediction.date <= thirty_days_later,
-                SurgePrediction.festival_events.isnot(None)
-            )
-        ).order_by(SurgePrediction.date)
-    )
-    predictions = result.scalars().all()
-    
+    # Filter festivals in the next 30 days
     festivals = []
-    for pred in predictions:
-        if pred.festival_events:
-            for fest in pred.festival_events:
-                if isinstance(fest, dict):
-                    festivals.append({
-                        "name": fest.get("name", "Festival"),
-                        "date": pred.date.isoformat(),
-                        "expected_impact": fest.get("expectedImpact", "medium"),
-                        "historical_opd_increase": fest.get("historicalOPDIncrease", 20),
-                        "severity": "high" if fest.get("historicalOPDIncrease", 0) > 50 else 
-                                   "medium" if fest.get("historicalOPDIncrease", 0) > 30 else "low"
-                    })
+    for fest in festival_list:
+        fest_date = date.fromisoformat(fest.get("date", ""))
+        if today <= fest_date <= thirty_days_later:
+            festivals.append({
+                "id": fest.get("id", f"fest-{fest.get('name', 'unknown')}"),
+                "name": fest.get("name", "Festival"),
+                "date": fest.get("date"),
+                "type": fest.get("type", "religious"),
+                "expected_impact": fest.get("expected_impact", "medium"),
+                "historical_opd_increase": fest.get("historical_opd_increase", 20),
+                "description": fest.get("description", "")
+            })
     
+    logger.info(f"Found {len(festivals)} upcoming festivals for {hospital.city}")
     return festivals
 
 
@@ -329,52 +381,92 @@ async def get_hospital_aqi(
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get 7-day AQI forecast for hospital city"""
+    """
+    Get 7-day AQI forecast for hospital city.
+    This now bypasses DB predictions and uses the WAQI `/feed/here` endpoint directly,
+    then converts `forecast.daily.pm25[*].avg` into AQI for each day.
+    """
+    from app.services.external_apis import get_aqi_data
+    from app.core.logging_config import get_logger
+
+    logger = get_logger("surge")
     today = date.today()
-    seven_days_later = today + timedelta(days=7)
-    
-    # Get hospital city
-    from app.models.hospital import Hospital
-    hospital_result = await db.execute(select(Hospital).where(Hospital.id == hospital_id))
-    hospital = hospital_result.scalar_one_or_none()
-    if not hospital:
-        raise HTTPException(status_code=404, detail="Hospital not found")
-    
-    city = hospital.city
-    
-    result = await db.execute(
-        select(SurgePrediction).where(
-            and_(
-                SurgePrediction.city == city,
-                SurgePrediction.date >= today,
-                SurgePrediction.date <= seven_days_later
-            )
-        ).order_by(SurgePrediction.date)
-    )
-    predictions = result.scalars().all()
-    
-    aqi_forecast = []
-    for pred in predictions:
-        if pred.aqi_data:
-            aqi = pred.aqi_data.get("aqi", 100)
+
+    # Call WAQI API (using /here/ with your token)
+    base_aqi_data = await get_aqi_data("Mumbai")  # City arg is only for logging; API uses /here/
+    logger.info(f"📦 [AQI] Base AQI data received (keys): {list(base_aqi_data.keys())}")
+
+    # NOTE: external_apis.get_aqi_data already flattens `forecast.daily` into `forecast`
+    # so base_aqi_data["forecast"] looks like: {"pm10": [...], "pm25": [...], "uvi": [...]}
+    forecast = base_aqi_data.get("forecast", {}) or {}
+    pm25_forecast = forecast.get("pm25", [])
+
+    if not pm25_forecast:
+        logger.error("❌ [AQI] No PM2.5 forecast data available from WAQI (expected 'forecast' -> 'pm25')")
+        raise HTTPException(status_code=503, detail="AQI PM2.5 forecast data not available")
+
+    logger.info(f"📅 [AQI] PM2.5 forecast days from API: {[d.get('day') for d in pm25_forecast]}")
+
+    aqi_forecast: list[dict[str, Any]] = []
+
+    for i in range(7):
+        pred_date = today + timedelta(days=i)
+        date_str = pred_date.isoformat()
+
+        pm25_value = None
+        for day_data in pm25_forecast:
+            forecast_date = day_data.get("day")
+            logger.info(f"📅 [AQI] Checking PM2.5 forecast date: {forecast_date} vs {date_str}")
+            if forecast_date == date_str:
+                pm25_value = day_data.get("avg", day_data.get("max", 0))
+                logger.info(f"✅ [AQI] Found PM2.5 forecast for {date_str}: avg={pm25_value}")
+                break
+
+        if pm25_value is None:
+            logger.warning(f"⚠️ [AQI] No PM2.5 forecast found for {date_str}")
+            continue
+
+        # Convert PM2.5 (µg/m³) to AQI using simplified US EPA breakpoints
+        if pm25_value <= 12:
+            aqi = int((50 / 12) * pm25_value)
+        elif pm25_value <= 35.4:
+            aqi = int(50 + ((100 - 50) / (35.4 - 12)) * (pm25_value - 12))
+        elif pm25_value <= 55.4:
+            aqi = int(100 + ((150 - 100) / (55.4 - 35.4)) * (pm25_value - 35.4))
+        elif pm25_value <= 150.4:
+            aqi = int(150 + ((200 - 150) / (150.4 - 55.4)) * (pm25_value - 55.4))
+        elif pm25_value <= 250.4:
+            aqi = int(200 + ((300 - 200) / (250.4 - 150.4)) * (pm25_value - 150.4))
+        else:
+            aqi = int(300 + ((400 - 300) / (350.4 - 250.4)) * (pm25_value - 250.4))
+
+        category = "moderate"
+        if aqi < 50:
+            category = "good"
+        elif aqi < 100:
             category = "moderate"
-            if aqi < 50:
-                category = "good"
-            elif aqi < 100:
-                category = "moderate"
-            elif aqi < 200:
-                category = "unhealthy"
-            elif aqi < 300:
-                category = "very_unhealthy"
-            else:
-                category = "hazardous"
-            
-            aqi_forecast.append({
-                "date": pred.date.isoformat(),
-                "aqi": aqi,
+        elif aqi < 150:
+            category = "unhealthy_for_sensitive"
+        elif aqi < 200:
+            category = "unhealthy"
+        elif aqi < 300:
+            category = "very_unhealthy"
+        else:
+            category = "hazardous"
+
+        aqi_forecast.append(
+            {
+                "date": date_str,
+                "aqi": int(aqi),
                 "category": category,
-                "pm25": pred.aqi_data.get("pm25", 0),
-                "pm10": pred.aqi_data.get("pm10", 0)
-            })
-    
+                "pm25": int(pm25_value),
+                "pm10": 0,
+            }
+        )
+
+        logger.info(
+            f"✅ [AQI] Added forecast for {date_str}: PM2.5={pm25_value}, AQI={aqi}, Category={category}"
+        )
+
+    logger.info(f"📊 [AQI] Returning {len(aqi_forecast)} days of AQI data")
     return aqi_forecast

@@ -473,14 +473,15 @@ CRITICAL DATE RULES (VERY IMPORTANT):
 - If patient mentions a date that seems to be in the past, clarify and use a future date
 - When calling schedule_appointment, the datetime MUST be in the future (after today)
 
-CRITICAL RULES FOR DOCTOR IDs (MOST IMPORTANT):
-- When you call get_available_doctors, it returns a JSON response with a "doctors" array containing doctor objects with "id", "name", and "email" fields
-- You MUST use ONLY the exact IDs from the get_available_doctors response
-- DO NOT make up, guess, or hallucinate doctor IDs like 1, 101, etc.
-- If you're not sure of a doctor ID, call get_available_doctors again to refresh the list
-- When presenting doctors to the patient, always show the ID along with the name so you can reference it later
-- When calling check_doctor_availability or schedule_appointment, you MUST use the EXACT doctor_id from the get_available_doctors response
-- NEVER use doctor_id=1 or any other ID that wasn't explicitly returned by get_available_doctors
+        CRITICAL RULES FOR DOCTOR IDs (MOST IMPORTANT):
+        - When you call get_available_doctors, it returns a JSON response with a "doctors" array and a "valid_ids" array.
+        - You MUST parse and REMEMBER the latest "valid_ids" array.
+        - You MUST use ONLY the exact IDs from the most recent get_available_doctors response.
+        - DO NOT make up, guess, or hallucinate doctor IDs like 1, 6, 101, etc.
+        - If the patient mentions a doctor number or ID that is NOT in valid_ids, you MUST say it is invalid and ask them to choose one of the valid IDs instead of calling any tools.
+        - When presenting doctors to the patient, always show the ID along with the name so you can reference it later.
+        - When calling check_doctor_availability or schedule_appointment, you MUST set doctor_id equal to one of the IDs from the latest valid_ids. If you are not sure, call get_available_doctors again.
+        - NEVER use a doctor_id that was not explicitly returned by get_available_doctors.
 
 CRITICAL RULES:
 - DO NOT immediately jump to scheduling tools when a patient first describes symptoms

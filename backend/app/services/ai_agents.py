@@ -2,7 +2,7 @@
 AI Agents - Core agentic AI implementation with tool calling
 """
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, and_
 from typing import Dict, Any, List, Optional
 from openai import OpenAI
 from app.core.config import settings
@@ -692,7 +692,7 @@ class DoctorAgent(BaseAgent):
         )
         documents = docs_result.scalars().all()
         
-        # Generate summary with GPT
+        # Generate summary with GPT, including a structured risk analysis block
         conversation_text = "\n".join([f"{m.sender_role}: {m.content}" for m in messages])
         docs_text = "\n".join([f"{d.name}: {d.summary}" for d in documents])
         
@@ -701,12 +701,37 @@ class DoctorAgent(BaseAgent):
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a medical assistant helping doctors review consultations. Generate a comprehensive summary in JSON format."
+                    "content": (
+                        "You are a medical assistant helping doctors review consultations. "
+                        "Always respond with a single JSON object only, no prose."
+                    ),
                 },
                 {
                     "role": "user",
-                    "content": f"Conversation:\n{conversation_text}\n\nPatient Documents:\n{docs_text}\n\nGenerate a structured summary in JSON format with fields like overallAssessment, patientKeyPoints (list), aiSuggestions (list), relevantHealthMetrics (list of objects with metric and reason fields)."
-                }
+                    "content": (
+                        f"Conversation:\n{conversation_text}\n\n"
+                        f"Patient Documents:\n{docs_text}\n\n"
+                        "Generate a structured summary in JSON format with the following shape:\n"
+                        "{\n"
+                        '  \"overallAssessment\": string,\n'
+                        '  \"patientKeyPoints\": string[],\n'
+                        '  \"aiSuggestions\": string[],\n'
+                        '  \"relevantHealthMetrics\": [\n'
+                        "    { \"metric\": string, \"reason\": string }\n"
+                        "  ],\n"
+                        "  \"riskAnalysis\": {\n"
+                        "    \"requiresPhysicalExamination\": boolean,\n"
+                        "    \"riskLevel\": \"high\" | \"medium\" | \"low\",\n"
+                        "    \"probabilityOfAdmit\": number,\n"
+                        "    \"department\": string[],\n"
+                        "    \"predictedMedications\": string[],\n"
+                        "    \"explanation\": string\n"
+                        "  }\n"
+                        "}\n\n"
+                        "Choose the risk values, departments, and predicted medications based on the conversation and documents. "
+                        "Make sure the JSON is valid and strictly matches this structure."
+                    ),
+                },
             ],
             response_format={"type": "json_object"}
         )
@@ -725,6 +750,7 @@ class SurgeAgent(BaseAgent):
         """Compute daily surge predictions using external data and AI"""
         from app.services.external_apis import get_aqi_data, get_weather_data, get_festival_calendar
         from app.models.surge_prediction import SurgePrediction
+        from app.models.hospital import Hospital
         from datetime import date, timedelta
         import json
         
@@ -734,36 +760,114 @@ class SurgeAgent(BaseAgent):
         aqi_data = await get_aqi_data(city)
         weather_data = await get_weather_data(city)
         festivals = get_festival_calendar()
+
+        # Extract AQI daily forecast (pm25) if available so each day can have different AQI impact
+        # Shape (from WAQI): forecast -> daily -> pm25 -> [{ "day": "YYYY-MM-DD", "avg": ..., ... }, ...]
+        aqi_forecast = aqi_data.get("forecast", {}) or {}
+        pm25_forecast = aqi_forecast.get("pm25", []) if isinstance(aqi_forecast, dict) else []
+        pm25_by_day: dict[str, float] = {}
+        for day_data in pm25_forecast:
+            day_str = day_data.get("day")
+            avg_val = day_data.get("avg")
+            if day_str and isinstance(avg_val, (int, float)):
+                pm25_by_day[day_str] = float(avg_val)
+        
+        # Get hospital onboarding data if available
+        departments = ["Emergency Medicine", "Pulmonology", "Cardiology", "General Medicine"]
+        department_weights = {
+            "Emergency Medicine": 0.3,
+            "Pulmonology": 0.2,
+            "Cardiology": 0.15,
+            "General Medicine": 0.35
+        }
+        avg_daily_patients = {}
+        
+        if hospital_id:
+            hospital_result = await self.db.execute(
+                select(Hospital).where(Hospital.id == hospital_id)
+            )
+            hospital = hospital_result.scalar_one_or_none()
+            if hospital and hospital.onboarding_completed and hospital.onboarding_completed != "false":
+                try:
+                    onboarding_data = json.loads(hospital.onboarding_completed)
+                    if onboarding_data.get("completed"):
+                        departments = onboarding_data.get("departments", departments)
+                        avg_daily_patients = onboarding_data.get("average_daily_patients", {})
+                        # Calculate weights from average patients
+                        total_avg = sum(avg_daily_patients.values()) if avg_daily_patients else 100
+                        if total_avg > 0:
+                            department_weights = {
+                                dept: (avg_daily_patients.get(dept, 0) / total_avg)
+                                for dept in departments
+                            }
+                except (json.JSONDecodeError, KeyError):
+                    logger.warning(f"Failed to parse onboarding data for hospital {hospital_id}")
         
         # Get historical consultation data (last 30 days)
         thirty_days_ago = today - timedelta(days=30)
-        result = await self.db.execute(
-            select(Consultation).where(
-                Consultation.created_at >= thirty_days_ago
-            )
+        consultation_query = select(Consultation).where(
+            Consultation.created_at >= thirty_days_ago
         )
+        if hospital_id:
+            # Filter by hospital patients - explicitly join on patient_id
+            consultation_query = consultation_query.join(
+                User, Consultation.patient_id == User.id
+            ).where(User.hospital_id == hospital_id)
+        
+        result = await self.db.execute(consultation_query)
         consultations = result.scalars().all()
         
         # Calculate baseline
         base_volume = len(consultations) / 30 if consultations else 100
+        if avg_daily_patients:
+            base_volume = sum(avg_daily_patients.values()) / len(avg_daily_patients) if avg_daily_patients else base_volume
         
-        # Generate predictions for next 7 days using AI
+        # Helper: convert PM2.5 (µg/m³) to AQI using simplified US EPA breakpoints
+        def pm25_to_aqi(pm25: float) -> int:
+            if pm25 <= 12:
+                return int((50 / 12) * pm25)
+            elif pm25 <= 35.4:
+                return int(50 + ((100 - 50) / (35.4 - 12)) * (pm25 - 12))
+            elif pm25 <= 55.4:
+                return int(100 + ((150 - 100) / (55.4 - 35.4)) * (pm25 - 35.4))
+            elif pm25 <= 150.4:
+                return int(150 + ((200 - 150) / (150.4 - 55.4)) * (pm25 - 55.4))
+            elif pm25 <= 250.4:
+                return int(200 + ((300 - 200) / (250.4 - 150.4)) * (pm25 - 150.4))
+            else:
+                return int(300 + ((400 - 300) / (350.4 - 250.4)) * (pm25 - 250.4))
+
+        # Generate predictions for next 7 days using external signals
         predictions_created = []
         for i in range(7):
             pred_date = today + timedelta(days=i)
             
-            # Check for festivals
-            festival_today = next((f for f in festivals if f.get("date") == pred_date.isoformat()), None)
-            festival_impact = festival_today.get("historicalOPDIncrease", 0) if festival_today else 0
-            
-            # AQI impact
-            aqi_impact = 0
-            if aqi_data.get("aqi", 0) > 300:
-                aqi_impact = 60
-            elif aqi_data.get("aqi", 0) > 200:
-                aqi_impact = 40
-            elif aqi_data.get("aqi", 0) > 150:
-                aqi_impact = 20
+            date_str = pred_date.isoformat()
+
+            # Check for festivals (date-specific)
+            festival_today = next((f for f in festivals if f.get("date") == date_str), None)
+            festival_impact = festival_today.get("historical_opd_increase", 0) if festival_today else 0
+
+            # AQI impact – *day-specific* using WAQI PM2.5 forecast when available
+            # Fallback to current AQI if forecast for that date isn't present
+            pm25_val = None
+            if date_str in pm25_by_day:
+                pm25_val = pm25_by_day[date_str]
+                day_aqi = pm25_to_aqi(pm25_val)
+            else:
+                day_aqi = aqi_data.get("aqi", 0)
+
+            # Map day_aqi (50–300+) → impact 0–60 in a continuous way so each day differs
+            #  - AQI <= 50  → 0 impact
+            #  - AQI 50–300 → linear ramp up to 60
+            if day_aqi <= 50:
+                aqi_impact = 0
+            else:
+                aqi_impact = (day_aqi - 50) * (60 / 250)  # 50→0, 300→60
+                if aqi_impact < 0:
+                    aqi_impact = 0
+                if aqi_impact > 60:
+                    aqi_impact = 60
             
             # Weekend effect
             weekday = pred_date.weekday()
@@ -772,32 +876,66 @@ class SurgeAgent(BaseAgent):
             total_increase = festival_impact + aqi_impact + weekend_factor
             
             # Department-wise breakdown with confidence scores
-            footfall_forecast = {
-                "Emergency Medicine": {
-                    "baseline": int(base_volume * 0.3),
-                    "predicted": int(base_volume * 0.3 * (1 + total_increase / 100)),
-                    "percentageIncrease": total_increase,
-                    "confidence": 0.75 if festival_today else 0.65
-                },
-                "Pulmonology": {
-                    "baseline": int(base_volume * 0.2),
-                    "predicted": int(base_volume * 0.2 * (1 + (total_increase + aqi_impact * 0.5) / 100)),
-                    "percentageIncrease": total_increase + aqi_impact * 0.5,
-                    "confidence": 0.80 if aqi_data.get("aqi", 0) > 200 else 0.65
-                },
-                "Cardiology": {
-                    "baseline": int(base_volume * 0.15),
-                    "predicted": int(base_volume * 0.15 * (1 + total_increase / 100)),
-                    "percentageIncrease": total_increase,
-                    "confidence": 0.70
-                },
-                "General Medicine": {
-                    "baseline": int(base_volume * 0.35),
-                    "predicted": int(base_volume * 0.35 * (1 + total_increase / 100)),
-                    "percentageIncrease": total_increase,
-                    "confidence": 0.70
+            # Different departments have different surge patterns
+            footfall_forecast = {}
+            total_baseline_all_depts = 0
+            total_predicted_all_depts = 0
+            dept_debug_rows = []
+            for dept in departments:
+                weight = department_weights.get(dept, 0.25)
+                dept_baseline = int(base_volume * weight) if not avg_daily_patients.get(dept) else avg_daily_patients[dept]
+                
+                # Department-specific surge multipliers
+                dept_multipliers = {
+                    "Emergency Medicine": 1.2,  # Higher surge during festivals
+                    "Pulmonology": 1.3,  # Higher with AQI
+                    "Cardiology": 1.0,
+                    "General Medicine": 1.1,
+                    "Pediatrics": 1.15,
+                    "Orthopedics": 0.9,  # Lower surge
+                    "Neurology": 0.95,
+                    "Oncology": 0.85  # Lower surge
                 }
-            }
+                
+                dept_multiplier = dept_multipliers.get(dept, 1.0)
+                
+                # Special handling for Pulmonology with AQI
+                if dept == "Pulmonology" or "Pulmonology" in dept or "Respiratory" in dept:
+                    dept_increase = (total_increase + aqi_impact * 0.5) * dept_multiplier
+                    confidence = 0.80 if aqi_data.get("aqi", 0) > 200 else 0.65
+                else:
+                    dept_increase = total_increase * dept_multiplier
+                    confidence = 0.75 if festival_today else 0.65
+                
+                dept_predicted = int(dept_baseline * (1 + dept_increase / 100))
+
+                footfall_forecast[dept] = {
+                    "baseline": dept_baseline,
+                    "predicted": dept_predicted,
+                    "percentageIncrease": dept_increase,
+                    "confidence": confidence
+                }
+
+                total_baseline_all_depts += dept_baseline
+                total_predicted_all_depts += dept_predicted
+                dept_debug_rows.append(
+                    f"{dept}: base={dept_baseline}, pred={dept_predicted}, inc={dept_increase:.1f}%"
+                )
+
+            # High-level log for this day's forecast
+            logger.info(
+                "[Forecast] date=%s total_baseline=%s total_predicted=%s "
+                "festival=%s day_aqi=%.1f aqi_impact=%.1f weekend=%s total_increase=%.1f | %s",
+                date_str,
+                total_baseline_all_depts,
+                total_predicted_all_depts,
+                festival_impact,
+                day_aqi,
+                aqi_impact,
+                weekend_factor,
+                total_increase,
+                " | ".join(dept_debug_rows),
+            )
             
             # Store or update prediction
             conditions = [
@@ -866,6 +1004,24 @@ class OperationsAgent(BaseAgent):
         )
         predictions = result.scalars().all()
         
+        # If no predictions exist, generate them first
+        if not predictions:
+            logger.info(f"No surge predictions found for hospital {hospital_id}, generating predictions...")
+            surge_agent = SurgeAgent(self.db)
+            await surge_agent.compute_daily_predictions(city, hospital_id)
+            
+            # Re-fetch predictions
+            result = await self.db.execute(
+                select(SurgePrediction).where(
+                    and_(
+                        SurgePrediction.city == city,
+                        SurgePrediction.date >= today,
+                        SurgePrediction.date <= two_days_later
+                    )
+                ).order_by(SurgePrediction.date)
+            )
+            predictions = result.scalars().all()
+        
         recommendations_created = []
         
         for pred in predictions:
@@ -876,8 +1032,8 @@ class OperationsAgent(BaseAgent):
                     predicted = data.get("predicted", 0)
                     baseline = data.get("baseline", 0)
                     
-                    # Generate recommendations for significant surges
-                    if increase_percent > 40:
+                    # Generate recommendations for significant surges (lowered threshold to 30%)
+                    if increase_percent > 30:
                         # Critical surge - create staffing recommendation
                         rec = Recommendation(
                             hospital_id=hospital_id,
@@ -900,7 +1056,7 @@ class OperationsAgent(BaseAgent):
                         self.db.add(rec)
                         recommendations_created.append(rec.title)
                     
-                    elif increase_percent > 25:
+                    elif increase_percent > 20:
                         # High surge - create supply recommendation
                         if dept == "Pulmonology":
                             rec = Recommendation(
