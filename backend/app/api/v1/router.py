@@ -2,7 +2,7 @@
 Main API router - aggregates all v1 endpoints
 """
 from fastapi import APIRouter
-from app.api.v1 import auth, patients, doctors, consultations, messages, documents, appointments, surge, ai, hospitals
+from app.api.v1 import auth, patients, doctors, consultations, messages, documents, appointments, surge, ai, hospitals, recommendations
 
 api_router = APIRouter()
 
@@ -17,5 +17,6 @@ api_router.include_router(appointments.router, prefix="/appointments", tags=["ap
 api_router.include_router(surge.router, prefix="/surge", tags=["surge"])
 api_router.include_router(ai.router, prefix="/ai", tags=["ai"])
 api_router.include_router(hospitals.router, prefix="/hospitals", tags=["hospitals"])
+api_router.include_router(recommendations.router, prefix="/recommendations", tags=["recommendations"])
 
 

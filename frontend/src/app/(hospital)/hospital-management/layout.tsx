@@ -4,17 +4,16 @@ import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, Activity, TrendingUp, Menu, X, LogOut } from "lucide-react";
+import { LayoutDashboard, TrendingUp, Menu, X, LogOut, MessageSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
-import { useRouter } from "next/navigation";
 
 const sections = [
     {
-        name: "Consultations",
-        href: "/hospital-management/consultations",
-        icon: Activity,
-        description: "Manage patient consultations and chat history"
+        name: "Dashboard",
+        href: "/hospital-management",
+        icon: LayoutDashboard,
+        description: "Overview of hospital operations"
     },
     {
         name: "Resource Management",
@@ -25,7 +24,7 @@ const sections = [
     {
         name: "Ask AURA",
         href: "/hospital-management/ask",
-        icon: LayoutDashboard,
+        icon: MessageSquare,
         description: "Natural language queries about hospital operations"
     }
 ];
@@ -36,7 +35,6 @@ export default function HospitalManagementLayout({
     children: React.ReactNode;
 }) {
     const pathname = usePathname();
-    const router = useRouter();
     const { logout, user } = useAuth();
     const [sidebarOpen, setSidebarOpen] = React.useState(false);
 
@@ -61,30 +59,33 @@ export default function HospitalManagementLayout({
             {/* Sidebar */}
             <aside
                 className={cn(
-                    "fixed inset-y-0 left-0 z-40 w-64 bg-card border-r transform transition-transform duration-200 ease-in-out lg:translate-x-0",
+                    "fixed inset-y-0 left-0 z-40 w-72 bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-800 shadow-lg transform transition-transform duration-300 ease-in-out lg:translate-x-0",
                     sidebarOpen ? "translate-x-0" : "-translate-x-full"
                 )}
             >
                 <div className="flex flex-col h-full">
                     {/* Header */}
-                    <div className="p-6 border-b">
+                    <div className="px-6 py-6 border-b border-gray-200 dark:border-gray-800 bg-gradient-to-br from-white to-gray-50 dark:from-gray-900 dark:to-gray-950">
                         <Link href="/" className="flex items-center gap-3 group">
-                            <div className="h-10 w-10 bg-gradient-to-br from-primary to-blue-600 rounded-xl flex items-center justify-center shadow-lg group-hover:scale-105 transition-transform">
-                                <Activity className="h-6 w-6 text-white" />
+                            <div className="h-12 w-12 bg-gradient-to-br from-blue-600 via-blue-500 to-blue-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-500/20 group-hover:shadow-xl group-hover:shadow-blue-500/30 group-hover:scale-105 transition-all duration-200">
+                                <LayoutDashboard className="h-6 w-6 text-white" />
                             </div>
-                            <div>
-                                <span className="text-2xl font-bold bg-gradient-to-r from-primary to-blue-600 bg-clip-text text-transparent">
+                            <div className="flex flex-col">
+                                <span className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-blue-500 bg-clip-text text-transparent">
                                     AURA
                                 </span>
-                                <p className="text-xs text-muted-foreground -mt-1 hidden sm:block">Hospital Management</p>
+                                <p className="text-xs text-gray-500 dark:text-gray-400 font-medium mt-0.5">Hospital Management</p>
                             </div>
                         </Link>
                     </div>
 
                     {/* Navigation */}
-                    <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
+                    <nav className="flex-1 px-4 py-6 space-y-1 overflow-y-auto">
                         {sections.map((section) => {
-                            const isActive = pathname?.startsWith(section.href);
+                            // For Dashboard, match exactly. For others, match if pathname starts with href
+                            const isActive = section.href === "/hospital-management"
+                                ? pathname === "/hospital-management" || pathname === "/hospital-management/"
+                                : pathname?.startsWith(section.href);
                             const Icon = section.icon;
 
                             return (
@@ -92,27 +93,51 @@ export default function HospitalManagementLayout({
                                     key={section.href}
                                     href={section.href}
                                     onClick={() => setSidebarOpen(false)}
+                                    className="block"
                                 >
-                                    <Button
-                                        variant={isActive ? "secondary" : "ghost"}
+                                    <div
                                         className={cn(
-                                            "w-full justify-start gap-3",
-                                            isActive && "bg-primary/10 text-primary hover:bg-primary/15"
+                                            "flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 group",
+                                            isActive
+                                                ? "bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-400 shadow-sm border border-blue-200 dark:border-blue-800/50"
+                                                : "text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800/50 hover:text-gray-900 dark:hover:text-gray-100"
                                         )}
                                     >
-                                        <Icon className="h-4 w-4" />
-                                        <span className="font-medium">{section.name}</span>
-                                    </Button>
+                                        <Icon 
+                                            className={cn(
+                                                "h-5 w-5 transition-colors",
+                                                isActive 
+                                                    ? "text-blue-600 dark:text-blue-400" 
+                                                    : "text-gray-500 dark:text-gray-400 group-hover:text-gray-700 dark:group-hover:text-gray-300"
+                                            )} 
+                                        />
+                                        <span className={cn(
+                                            "font-medium text-sm",
+                                            isActive 
+                                                ? "text-blue-700 dark:text-blue-400" 
+                                                : "text-gray-700 dark:text-gray-300"
+                                        )}>
+                                            {section.name}
+                                        </span>
+                                        {isActive && (
+                                            <div className="ml-auto h-2 w-2 rounded-full bg-blue-600 dark:bg-blue-400" />
+                                        )}
+                                    </div>
                                 </Link>
                             );
                         })}
                     </nav>
 
                     {/* Footer */}
-                    <div className="p-4 border-t">
-                        <p className="text-xs text-muted-foreground">
-                            © 2025 AURA Healthtech
-                        </p>
+                    <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50">
+                        <div className="flex items-center gap-2 mb-2">
+                            <div className="h-6 w-6 bg-gradient-to-br from-blue-600 to-blue-500 rounded-md flex items-center justify-center">
+                                <span className="text-white text-xs font-bold">N</span>
+                            </div>
+                            <p className="text-xs text-gray-500 dark:text-gray-400 font-medium">
+                                © 2025 AURA Healthtech
+                            </p>
+                        </div>
                     </div>
                 </div>
             </aside>
@@ -126,11 +151,11 @@ export default function HospitalManagementLayout({
             )}
 
             {/* Main Content */}
-            <main className="flex-1 overflow-auto lg:pl-64">
+            <main className="flex-1 overflow-auto lg:pl-72">
                 {/* Top Header with Sign Out */}
                 <header className="h-16 border-b bg-background/95 backdrop-blur sticky top-0 z-10 flex items-center justify-between px-6">
                     <div className="flex items-center gap-2">
-                        <Activity className="h-6 w-6 text-primary lg:hidden" />
+                        <LayoutDashboard className="h-6 w-6 text-primary lg:hidden" />
                         <span className="font-bold lg:hidden">AURA</span>
                         {user && (
                             <span className="text-sm text-muted-foreground hidden lg:block">

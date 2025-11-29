@@ -74,8 +74,80 @@ export default function AdminPage() {
     const [assessmentFilter, setAssessmentFilter] = React.useState<"all" | "assessed" | "unassessed">("all");
 
     const loadData = React.useCallback(async () => {
+        if (!user) {
+            console.error("User not available");
+            setLoading(false);
+            return;
+        }
+
+        // For admin users, we need to get their hospital_id
+        // If not available, try to get it from the user's hospital association
+        let hospitalId = user.hospital_id;
+        
+        if (!hospitalId && user.role === "admin") {
+            // For now, we'll need to handle this - admins might not have hospital_id
+            // Let's check if we can get it from the backend or use a default
+            console.warn("Admin user has no hospital_id. Some features may not work.");
+            setLoading(false);
+            return;
+        }
+
         try {
-            const consultations = await api.getConsultations();
+            // For admin users without hospital_id, try to get their hospital
+            let hospitalId = user.hospital_id;
+            
+            if (!hospitalId && user.role === "admin") {
+                // Try to find hospital by admin's name or email
+                // For now, we'll need to handle this differently
+                // Let's check if we can get hospitals and use the first one
+                try {
+                    const hospitals = await api.getHospitals();
+                    if (hospitals && hospitals.length > 0) {
+                        hospitalId = hospitals[0].id;
+                        console.log(`Using hospital ${hospitalId} for admin user`);
+                    } else {
+                        console.error("No hospitals found for admin user");
+                        setLoading(false);
+                        return;
+                    }
+                } catch (e) {
+                    console.error("Failed to fetch hospitals:", e);
+                    setLoading(false);
+                    return;
+                }
+            }
+            
+            if (!hospitalId) {
+                console.error("No hospital_id available");
+                setLoading(false);
+                return;
+            }
+
+            // Load stats
+            const [patientsCount, consultationsStats, highRiskCount, pendingReviewCount] = await Promise.all([
+                api.getHospitalPatientsCount(hospitalId),
+                api.getHospitalConsultationsStats(hospitalId),
+                api.getHospitalHighRiskConsultations(hospitalId),
+                api.getHospitalPendingReviewConsultations(hospitalId)
+            ]);
+
+            setStats({
+                totalPatients: patientsCount.count || 0,
+                totalConsultations: consultationsStats.total || 0,
+                todayConsultations: consultationsStats.today || 0,
+                pendingConsultations: pendingReviewCount.count || 0,
+                verifiedConsultations: 0, // Not available in new API
+                completedConsultations: 0, // Will be calculated from consultations
+                totalMessages: 0, // Not available in new API
+                highRiskCount: highRiskCount.count || 0
+            });
+
+            // Load consultations with filters
+            const consultations = await api.getHospitalConsultations(hospitalId, {
+                risk: riskFilter !== "all" ? riskFilter : undefined,
+                department: departmentFilter !== "all" ? departmentFilter : undefined,
+                assessment: assessmentFilter !== "all" ? assessmentFilter : undefined
+            });
             
             // Transform backend consultations to frontend format
             const transformedConsultations: Consultation[] = await Promise.all(
@@ -97,6 +169,9 @@ export default function AdminPage() {
                         console.error(`Failed to load messages for consultation ${c.id}:`, e);
                     }
 
+                    // Get risk assessment from consultation directly
+                    const riskAssessment = c.risk_assessment || null;
+
                     return {
                         id: c.id.toString(),
                         patientId: c.patient_id?.toString() || "",
@@ -105,19 +180,26 @@ export default function AdminPage() {
                         createdAt: c.created_at || new Date().toISOString(),
                         updatedAt: c.updated_at || c.created_at || new Date().toISOString(),
                         messages: messages,
-                        aiDiagnosis: c.ai_summary || null
+                        aiDiagnosis: c.ai_summary || null,
+                        riskAssessment: riskAssessment
                     };
                 })
             );
 
             // Separate ongoing and completed
             const ongoing = transformedConsultations.filter((c: Consultation) =>
-                c.status === "pending" || c.status === "verified" || c.status === "active"
+                c.status === "pending" || c.status === "in_progress" || c.status === "pending_review"
             ).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
             const completed = transformedConsultations.filter((c: Consultation) =>
                 c.status === "completed"
             ).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+            // Update completed count in stats
+            setStats(prev => ({
+                ...prev,
+                completedConsultations: completed.length
+            }));
 
             setOngoingConsultations(ongoing);
             setCompletedConsultations(completed);
@@ -129,34 +211,16 @@ export default function AdminPage() {
             const completedCount = completed.length;
             const totalMessages = transformedConsultations.reduce((sum: number, c: Consultation) => sum + (c.messages?.length || 0), 0);
 
-            // Count high risk consultations
-            const highRisk = transformedConsultations.filter((c: Consultation) => {
-                const riskMsg = c.messages?.find((m: Message) => m.role === "risk_assessment");
-                return riskMsg?.riskAssessment?.riskLevel === "red";
-            }).length;
-
-            // Today's consultations
-            const today = new Date().toDateString();
-            const todayCount = transformedConsultations.filter((c: Consultation) =>
-                new Date(c.createdAt).toDateString() === today
-            ).length;
-
-            setStats({
-                totalPatients: uniquePatients,
-                totalConsultations: transformedConsultations.length,
-                pendingConsultations: pending,
-                verifiedConsultations: verified,
-                completedConsultations: completedCount,
-                totalMessages: totalMessages,
-                todayConsultations: todayCount,
-                highRiskCount: highRisk
-            });
+            // Stats are already set above from API calls
         } catch (error) {
             console.error("Failed to load consultations:", error);
+            // Set empty state on error
+            setOngoingConsultations([]);
+            setCompletedConsultations([]);
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [riskFilter, departmentFilter, assessmentFilter]);
 
     // Redirect if not authenticated or not admin
     React.useEffect(() => {
@@ -178,9 +242,9 @@ export default function AdminPage() {
     }, [user, authLoading]);
 
     React.useEffect(() => {
-        if (user && user.role === "admin") {
+        if (user && user.role === "admin" && user.hospital_id) {
             loadData();
-            const interval = setInterval(loadData, 5000); // Poll every 5 seconds
+            const interval = setInterval(loadData, 30000); // Poll every 30 seconds
             return () => clearInterval(interval);
         }
     }, [user, loadData]);
@@ -193,6 +257,18 @@ export default function AdminPage() {
     ];
 
     const getRiskAssessment = (consultation: Consultation): RiskAssessment | null => {
+        // First check if risk assessment is directly on consultation
+        if ((consultation as any).riskAssessment) {
+            const ra = (consultation as any).riskAssessment;
+            return {
+                riskLevel: ra.risk_level || ra.riskLevel || "green",
+                needsPhysicalExam: ra.needs_physical_exam || ra.needsPhysicalExam || "no",
+                suggestedDepartment: ra.suggested_department || ra.suggestedDepartment || "General Medicine",
+                doctorLevel: ra.doctor_level || ra.doctorLevel || "junior",
+                reasoning: ra.reasoning || ""
+            };
+        }
+        // Fallback to checking messages
         const riskMsg = consultation.messages?.find((m: Message) => m.role === "risk_assessment");
         return riskMsg?.riskAssessment || null;
     };

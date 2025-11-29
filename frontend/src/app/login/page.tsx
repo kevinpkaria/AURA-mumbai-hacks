@@ -57,7 +57,7 @@ export default function LoginPage() {
       } else if (loggedInUser.role === "doctor") {
         window.location.href = "/portal";
       } else if (loggedInUser.role === "admin") {
-        window.location.href = "/hospital-management/consultations";
+        window.location.href = "/hospital-management";
       } else {
         setError("Unknown user role. Please contact support.");
         setLoading(false);

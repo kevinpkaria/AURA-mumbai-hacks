@@ -6,6 +6,7 @@ from app.models.consultation import Consultation
 from app.models.message import Message
 from app.models.appointment import Appointment
 from app.models.surge_prediction import SurgePrediction
+from app.models.recommendation import Recommendation
 
 __all__ = [
     "User",
@@ -15,6 +16,7 @@ __all__ = [
     "Message",
     "Appointment",
     "SurgePrediction",
+    "Recommendation",
 ]
 
 

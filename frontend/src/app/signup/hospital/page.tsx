@@ -27,7 +27,7 @@ export default function HospitalSignUpPage() {
   // Redirect if already logged in (wait for user state to update)
   React.useEffect(() => {
     if (user && user.role === "admin") {
-      window.location.href = "/hospital-management/consultations";
+      window.location.href = "/hospital-management";
     }
   }, [user]);
 

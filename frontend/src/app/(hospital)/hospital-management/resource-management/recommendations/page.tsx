@@ -16,13 +16,130 @@ import {
     ChevronRight
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { generateRecommendations, type Recommendation } from "@/lib/mockData";
+import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
+import { Loader2 } from "lucide-react";
+
+interface Recommendation {
+    id: string;
+    title: string;
+    description: string;
+    priority: "critical" | "high" | "medium" | "low";
+    category: "staffing" | "supplies" | "operations" | "communication";
+    department?: string;
+    implementBy: string;
+    estimatedCost?: number;
+    actions: Array<{
+        id: string;
+        description: string;
+        type: string;
+        completed: boolean;
+        quantity?: number;
+        assignTo?: string;
+        deadline?: string;
+    }>;
+}
 
 export default function RecommendationsPage() {
-    const [recommendations, setRecommendations] = React.useState(generateRecommendations());
+    const { user } = useAuth();
+    const [recommendations, setRecommendations] = React.useState<Recommendation[]>([]);
+    const [loading, setLoading] = React.useState(true);
     const [filterPriority, setFilterPriority] = React.useState<string>("all");
     const [filterCategory, setFilterCategory] = React.useState<string>("all");
     const [expandedRecs, setExpandedRecs] = React.useState<Set<string>>(new Set());
+    const [stats, setStats] = React.useState({
+        total: 0,
+        critical: 0,
+        high: 0,
+        medium: 0,
+        low: 0,
+        completed: 0
+    });
+
+    React.useEffect(() => {
+        if (user) {
+            loadRecommendations();
+        }
+    }, [user, filterPriority, filterCategory]);
+
+    const loadRecommendations = async () => {
+        if (!user) return;
+
+        try {
+            setLoading(true);
+            
+            // For admin users without hospital_id, try to get their hospital
+            let hospitalId = user.hospital_id;
+            
+            if (!hospitalId && user.role === "admin") {
+                try {
+                    const hospitals = await api.getHospitals();
+                    if (hospitals && hospitals.length > 0) {
+                        hospitalId = hospitals[0].id;
+                        console.log(`Using hospital ${hospitalId} for admin user`);
+                    } else {
+                        console.error("No hospitals found for admin user");
+                        setLoading(false);
+                        return;
+                    }
+                } catch (e) {
+                    console.error("Failed to fetch hospitals:", e);
+                    setLoading(false);
+                    return;
+                }
+            }
+            
+            if (!hospitalId) {
+                console.error("No hospital_id available");
+                setLoading(false);
+                return;
+            }
+
+            const [statsData, recsData] = await Promise.all([
+                api.getRecommendationsStats(hospitalId),
+                api.getHospitalRecommendations(hospitalId, {
+                    priority: filterPriority !== "all" ? filterPriority : undefined,
+                    category: filterCategory !== "all" ? filterCategory : undefined
+                })
+            ]);
+
+            setStats({
+                total: statsData.total || 0,
+                critical: statsData.critical || 0,
+                high: statsData.high || 0,
+                medium: statsData.medium || 0,
+                low: statsData.low || 0,
+                completed: statsData.completed || 0
+            });
+
+            // Transform backend data to frontend format
+            const transformedRecs: Recommendation[] = recsData.map((rec: any) => ({
+                id: rec.id.toString(),
+                title: rec.title,
+                description: rec.description,
+                priority: rec.priority,
+                category: rec.category,
+                department: rec.department,
+                implementBy: rec.deadline || new Date().toISOString(),
+                estimatedCost: rec.estimated_cost,
+                actions: rec.extra_data?.actions || [
+                    {
+                        id: "1",
+                        description: "Implement recommendation",
+                        type: rec.category,
+                        completed: rec.progress_completed >= rec.progress_total
+                    }
+                ]
+            }));
+
+            setRecommendations(transformedRecs);
+        } catch (error) {
+            console.error("Failed to load recommendations:", error);
+            setRecommendations([]);
+        } finally {
+            setLoading(false);
+        }
+    };
 
     const toggleExpanded = (id: string) => {
         const newExpanded = new Set(expandedRecs);
@@ -34,18 +151,45 @@ export default function RecommendationsPage() {
         setExpandedRecs(newExpanded);
     };
 
-    const toggleActionCompleted = (recId: string, actionId: string) => {
-        setRecommendations(prev => prev.map(rec => {
-            if (rec.id === recId) {
+    const toggleActionCompleted = async (recId: string, actionId: string) => {
+        const rec = recommendations.find(r => r.id === recId);
+        if (!rec) return;
+
+        const action = rec.actions.find(a => a.id === actionId);
+        if (!action) return;
+
+        // Update locally first
+        setRecommendations(prev => prev.map(r => {
+            if (r.id === recId) {
+                const updatedActions = r.actions.map(a =>
+                    a.id === actionId ? { ...a, completed: !a.completed } : a
+                );
+                const completedCount = updatedActions.filter(a => a.completed).length;
+                
                 return {
-                    ...rec,
-                    actions: rec.actions.map(action =>
-                        action.id === actionId ? { ...action, completed: !action.completed } : action
-                    )
+                    ...r,
+                    actions: updatedActions
                 };
             }
-            return rec;
+            return r;
         }));
+
+        // Update backend
+        try {
+            const recNum = parseInt(recId);
+            const recData = recommendations.find(r => r.id === recId);
+            if (recData) {
+                const completedCount = recData.actions.filter(a => a.completed || a.id === actionId).length;
+                await api.updateRecommendation(recNum, {
+                    progress_completed: completedCount,
+                    progress_total: recData.actions.length
+                });
+            }
+        } catch (error) {
+            console.error("Failed to update recommendation:", error);
+            // Revert on error
+            loadRecommendations();
+        }
     };
 
     const filteredRecommendations = React.useMemo(() => {
@@ -95,19 +239,16 @@ export default function RecommendationsPage() {
         }
     };
 
-    const stats = React.useMemo(() => {
-        const total = recommendations.length;
-        const byPriority = {
-            critical: recommendations.filter(r => r.priority === "critical").length,
-            high: recommendations.filter(r => r.priority === "high").length,
-            medium: recommendations.filter(r => r.priority === "medium").length,
-            low: recommendations.filter(r => r.priority === "low").length
-        };
-        const completed = recommendations.filter(r =>
-            r.actions.every(a => a.completed)
-        ).length;
-        return { total, byPriority, completed };
-    }, [recommendations]);
+    if (loading) {
+        return (
+            <div className="flex items-center justify-center h-[60vh]">
+                <div className="text-center">
+                    <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4 text-primary" />
+                    <p className="text-muted-foreground">Loading recommendations...</p>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="space-y-6">
@@ -137,7 +278,7 @@ export default function RecommendationsPage() {
                         <AlertTriangle className="h-4 w-4 text-red-600" />
                     </CardHeader>
                     <CardContent>
-                        <div className="text-2xl font-bold text-red-600">{stats.byPriority.critical}</div>
+                        <div className="text-2xl font-bold text-red-600">{stats.critical}</div>
                     </CardContent>
                 </Card>
 
@@ -147,7 +288,7 @@ export default function RecommendationsPage() {
                         <AlertTriangle className="h-4 w-4 text-orange-600" />
                     </CardHeader>
                     <CardContent>
-                        <div className="text-2xl font-bold text-orange-600">{stats.byPriority.high}</div>
+                        <div className="text-2xl font-bold text-orange-600">{stats.high}</div>
                     </CardContent>
                 </Card>
 
@@ -194,7 +335,7 @@ export default function RecommendationsPage() {
                 </div>
                 {(filterPriority !== "all" || filterCategory !== "all") && (
                     <p className="text-sm text-muted-foreground">
-                        Showing {filteredRecommendations.length} of {stats.total} recommendations
+                        Showing {filteredRecommendations.length} of {recommendations.length} recommendations
                     </p>
                 )}
             </div>

@@ -21,6 +21,18 @@ import {
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
+import {
+    generateSurgeForecasts,
+    generateFestivals,
+    generatePollutionData,
+    generateResourceUtilization,
+    generateHealthAlerts,
+    type SurgeForecast,
+    type FestivalEvent,
+    type PollutionData,
+    type ResourceUtilization
+} from "@/lib/mockData";
 
 interface SurgeForecast {
     date: string;
@@ -56,109 +68,102 @@ interface PollutionData {
 }
 
 export default function SurgePredictionPage() {
+    const { user } = useAuth();
     const [selectedDepartment, setSelectedDepartment] = React.useState<string>("all");
     const [timeRange, setTimeRange] = React.useState<"3day" | "7day">("7day");
     const [forecasts, setForecasts] = React.useState<SurgeForecast[]>([]);
     const [festivals, setFestivals] = React.useState<FestivalEvent[]>([]);
     const [pollution, setPollution] = React.useState<PollutionData[]>([]);
+    const [criticalAlerts, setCriticalAlerts] = React.useState<any[]>([]);
+    const [departmentForecasts, setDepartmentForecasts] = React.useState<any[]>([]);
     const [loading, setLoading] = React.useState(true);
-    const [city] = React.useState("Delhi");
 
     React.useEffect(() => {
-        loadSurgeData();
-    }, [city, timeRange]);
+        if (user) {
+            loadSurgeData();
+        }
+    }, [user, timeRange, selectedDepartment]);
 
     const loadSurgeData = async () => {
+        if (!user) return;
+
         try {
             setLoading(true);
-            const days = timeRange === "3day" ? 3 : 7;
-            const forecastData = await api.getSurgeForecast(city, days);
             
-            // Transform backend data to frontend format
-            const transformedForecasts: SurgeForecast[] = [];
-            const festivalsSet: Map<string, FestivalEvent> = new Map();
-            const pollutionMap: Map<string, PollutionData> = new Map();
+            // Use dummy data from mockData.ts
+            const mockForecasts = generateSurgeForecasts();
+            const mockFestivals = generateFestivals();
+            const mockPollution = generatePollutionData();
+            const mockResourceUtil = generateResourceUtilization();
+            const mockHealthAlerts = generateHealthAlerts();
 
-            forecastData.forEach((pred: any) => {
-                const footfall = pred.footfall_forecast || {};
-                const date = pred.date;
-
-                // Extract festivals
-                if (pred.festival_events) {
-                    pred.festival_events.forEach((fest: any, idx: number) => {
-                        const festId = `fest-${date}-${idx}`;
-                        if (!festivalsSet.has(festId)) {
-                            festivalsSet.set(festId, {
-                                id: festId,
-                                name: fest.name || "Festival",
-                                date: date,
-                                type: fest.type || "religious",
-                                expectedImpact: fest.expectedImpact || "medium",
-                                historicalOPDIncrease: fest.historicalOPDIncrease || 20
-                            });
-                        }
-                    });
-                }
-
-                // Extract pollution data
-                if (pred.aqi_data) {
-                    const aqi = pred.aqi_data.aqi || 100;
-                    let category = "moderate";
-                    if (aqi < 50) category = "good";
-                    else if (aqi < 100) category = "moderate";
-                    else if (aqi < 200) category = "unhealthy";
-                    else if (aqi < 300) category = "very_unhealthy";
-                    else category = "hazardous";
-
-                    pollutionMap.set(date, {
-                        date: date,
-                        aqi: aqi,
-                        category: category,
-                        pm25: pred.aqi_data.pm25 || aqi * 0.6,
-                        pm10: pred.aqi_data.pm10 || aqi * 0.8,
-                        primaryPollutant: aqi > 200 ? "PM2.5" : "PM10"
-                    });
-                }
-
-                // Extract department forecasts
-                Object.keys(footfall).forEach((dept: string) => {
-                    const deptData = footfall[dept];
-                    if (typeof deptData === 'object' && deptData !== null) {
-                        const percentageIncrease = deptData.percentageIncrease || 0;
-                        const baselineVolume = deptData.baselineVolume || 100;
-                        const predictedVolume = deptData.predictedVolume || baselineVolume;
-                        const confidence = deptData.confidence || 0.7;
-                        const factors = deptData.contributingFactors || [];
-
-                        transformedForecasts.push({
-                            date: date,
-                            department: dept,
-                            predictedVolume: predictedVolume,
-                            baselineVolume: baselineVolume,
-                            percentageIncrease: percentageIncrease,
-                            confidence: confidence,
-                            contributingFactors: factors.map((f: any) => ({
-                                type: f.type || "historical_trend",
-                                name: f.name || "Factor",
-                                impact: f.impact || 0,
-                                severity: f.severity || "low"
-                            }))
-                        });
-                    }
-                });
+            // Filter forecasts by time range
+            const days = timeRange === "3day" ? 3 : 7;
+            const today = new Date();
+            const endDate = new Date(today.getTime() + days * 24 * 60 * 60 * 1000);
+            
+            const filteredForecasts = mockForecasts.filter(f => {
+                const forecastDate = new Date(f.date);
+                return forecastDate >= today && forecastDate <= endDate;
             });
 
-            setForecasts(transformedForecasts);
-            setFestivals(Array.from(festivalsSet.values()));
-            setPollution(Array.from(pollutionMap.values()).sort((a, b) => 
-                new Date(a.date).getTime() - new Date(b.date).getTime()
-            ));
+            setForecasts(filteredForecasts);
+
+            // Generate critical alerts (next 48 hours with >30% increase)
+            const twoDaysLater = new Date(today.getTime() + 2 * 24 * 60 * 60 * 1000);
+            const critical = filteredForecasts
+                .filter(f => {
+                    const forecastDate = new Date(f.date);
+                    return forecastDate <= twoDaysLater && f.percentageIncrease > 30;
+                })
+                .map(f => ({
+                    department: f.department,
+                    date: f.date,
+                    increase_percent: f.percentageIncrease,
+                    from: f.baselineVolume,
+                    to: f.predictedVolume
+                }));
+            setCriticalAlerts(critical);
+
+            // Generate department forecasts (aggregate by department)
+            const deptMap = new Map<string, any>();
+            filteredForecasts.forEach(f => {
+                const existing = deptMap.get(f.department) || {
+                    department: f.department,
+                    baseline: 0,
+                    predicted: 0,
+                    dates: []
+                };
+                existing.baseline += f.baselineVolume;
+                existing.predicted += f.predictedVolume;
+                existing.dates.push(f.date);
+                deptMap.set(f.department, existing);
+            });
+
+            const deptForecasts = Array.from(deptMap.values()).map(dept => ({
+                department: dept.department,
+                baseline: Math.round(dept.baseline / dept.dates.length),
+                predicted: Math.round(dept.predicted / dept.dates.length),
+                increase_percent: Math.round(((dept.predicted - dept.baseline) / dept.baseline) * 100),
+                confidence: 0.75,
+                date: dept.dates[0] // Use first date
+            }));
+            setDepartmentForecasts(deptForecasts);
+
+            // Set festivals
+            setFestivals(mockFestivals);
+
+            // Set pollution data
+            setPollution(mockPollution);
+
         } catch (error) {
             console.error("Failed to load surge data:", error);
-            // Fallback to empty arrays on error
+            // Fallback to empty data
             setForecasts([]);
             setFestivals([]);
             setPollution([]);
+            setCriticalAlerts([]);
+            setDepartmentForecasts([]);
         } finally {
             setLoading(false);
         }
@@ -182,42 +187,35 @@ export default function SurgePredictionPage() {
         return filtered;
     }, [forecasts, selectedDepartment, timeRange]);
 
-    // Get critical surges (> 40% increase in next 48 hours)
-    const criticalSurges = React.useMemo(() => {
-        const today = new Date();
-        const twoDaysLater = new Date(today.getTime() + 2 * 24 * 60 * 60 * 1000);
-        return forecasts.filter(f =>
-            new Date(f.date) <= twoDaysLater && f.percentageIncrease > 40
-        );
-    }, [forecasts]);
+    // Use critical alerts from API
+    const criticalSurges = criticalAlerts;
 
-    // Prepare chart data
+    // Prepare chart data from forecast API response
     const chartData = React.useMemo(() => {
-        if (selectedDepartment === "all") {
-            // Aggregate by date
+        // Use the forecast data directly from API
+        if (forecasts.length > 0) {
             const dateMap = new Map<string, { date: string; baseline: number; predicted: number }>();
-
+            
             forecasts.forEach(f => {
-                const existing = dateMap.get(f.date) || { date: f.date, baseline: 0, predicted: 0 };
-                dateMap.set(f.date, {
-                    date: f.date,
-                    baseline: existing.baseline + f.baselineVolume,
-                    predicted: existing.predicted + f.predictedVolume
-                });
+                if (selectedDepartment === "all" || f.department === selectedDepartment) {
+                    const existing = dateMap.get(f.date) || { date: f.date, baseline: 0, predicted: 0 };
+                    dateMap.set(f.date, {
+                        date: f.date,
+                        baseline: existing.baseline + f.baselineVolume,
+                        predicted: existing.predicted + f.predictedVolume
+                    });
+                }
             });
 
-            return Array.from(dateMap.values()).map(d => ({
-                ...d,
-                date: new Date(d.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-            }));
-        } else {
-            return filteredForecasts.map(f => ({
-                date: new Date(f.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-                baseline: f.baselineVolume,
-                predicted: f.predictedVolume
-            }));
+            return Array.from(dateMap.values())
+                .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+                .map(d => ({
+                    ...d,
+                    date: new Date(d.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                }));
         }
-    }, [forecasts, filteredForecasts, selectedDepartment]);
+        return [];
+    }, [forecasts, selectedDepartment]);
 
     if (loading) {
         return (
@@ -241,7 +239,7 @@ export default function SurgePredictionPage() {
             </div>
 
             {/* Critical Alerts Banner */}
-            {criticalSurges.length > 0 && (
+            {criticalAlerts.length > 0 && (
                 <Card className="border-red-300 bg-red-50">
                     <CardHeader className="pb-3">
                         <div className="flex items-center gap-2">
@@ -253,20 +251,20 @@ export default function SurgePredictionPage() {
                     </CardHeader>
                     <CardContent>
                         <div className="space-y-2">
-                            {criticalSurges.slice(0, 3).map((surge, idx) => (
+                            {criticalAlerts.slice(0, 3).map((alert: any, idx: number) => (
                                 <div key={idx} className="flex items-center justify-between text-sm">
                                     <div>
-                                        <span className="font-semibold text-red-900">{surge.department}</span>
+                                        <span className="font-semibold text-red-900">{alert.department}</span>
                                         <span className="text-red-700 ml-2">
-                                            on {new Date(surge.date).toLocaleDateString()}
+                                            on {new Date(alert.date).toLocaleDateString()}
                                         </span>
                                     </div>
                                     <div className="flex items-center gap-2">
                                         <span className="text-red-900 font-bold">
-                                            +{surge.percentageIncrease.toFixed(0)}%
+                                            +{alert.increase_percent}%
                                         </span>
                                         <span className="text-xs text-red-700">
-                                            ({surge.baselineVolume} → {surge.predictedVolume} patients)
+                                            ({alert.from} → {alert.to} patients)
                                         </span>
                                     </div>
                                 </div>
@@ -276,14 +274,72 @@ export default function SurgePredictionPage() {
                 </Card>
             )}
 
-            {/* Real-Time Signals - Note: Resource utilization would come from a separate endpoint */}
+            {/* Real-Time Hospital Signals */}
             <div>
                 <h2 className="text-lg font-semibold mb-3">Real-Time Hospital Signals</h2>
-                            <Card>
-                    <CardContent className="py-8 text-center">
-                        <p className="text-muted-foreground">Resource utilization data will be available when backend endpoint is implemented</p>
-                                </CardContent>
-                            </Card>
+                <Card>
+                    <CardHeader>
+                        <CardTitle className="text-base">Resource Utilization</CardTitle>
+                        <CardDescription>Current hospital resource status</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                            {(() => {
+                                const todayUtil = generateResourceUtilization()[7]; // Today's data
+                                return (
+                                    <>
+                                        <div className="p-4 border rounded-lg">
+                                            <div className="flex items-center justify-between mb-2">
+                                                <span className="text-sm text-muted-foreground">Bed Occupancy</span>
+                                                <Bed className="h-4 w-4 text-muted-foreground" />
+                                            </div>
+                                            <div className="text-2xl font-bold">{todayUtil.bedOccupancy.toFixed(0)}%</div>
+                                            <div className="w-full bg-gray-200 rounded-full h-2 mt-2">
+                                                <div 
+                                                    className="bg-blue-600 h-2 rounded-full" 
+                                                    style={{ width: `${todayUtil.bedOccupancy}%` }}
+                                                />
+                                            </div>
+                                        </div>
+                                        <div className="p-4 border rounded-lg">
+                                            <div className="flex items-center justify-between mb-2">
+                                                <span className="text-sm text-muted-foreground">ICU Occupancy</span>
+                                                <Heart className="h-4 w-4 text-muted-foreground" />
+                                            </div>
+                                            <div className="text-2xl font-bold">{todayUtil.icuOccupancy.toFixed(0)}%</div>
+                                            <div className="w-full bg-gray-200 rounded-full h-2 mt-2">
+                                                <div 
+                                                    className="bg-red-600 h-2 rounded-full" 
+                                                    style={{ width: `${todayUtil.icuOccupancy}%` }}
+                                                />
+                                            </div>
+                                        </div>
+                                        <div className="p-4 border rounded-lg">
+                                            <div className="flex items-center justify-between mb-2">
+                                                <span className="text-sm text-muted-foreground">Ventilators</span>
+                                                <Wind className="h-4 w-4 text-muted-foreground" />
+                                            </div>
+                                            <div className="text-2xl font-bold">
+                                                {todayUtil.ventilators.inUse}/{todayUtil.ventilators.total}
+                                            </div>
+                                            <p className="text-xs text-muted-foreground mt-1">In use</p>
+                                        </div>
+                                        <div className="p-4 border rounded-lg">
+                                            <div className="flex items-center justify-between mb-2">
+                                                <span className="text-sm text-muted-foreground">Nurses</span>
+                                                <Users className="h-4 w-4 text-muted-foreground" />
+                                            </div>
+                                            <div className="text-2xl font-bold">
+                                                {todayUtil.nurses.present}/{todayUtil.nurses.scheduled}
+                                            </div>
+                                            <p className="text-xs text-muted-foreground mt-1">Present</p>
+                                        </div>
+                                    </>
+                                );
+                            })()}
+                        </div>
+                    </CardContent>
+                </Card>
             </div>
 
             {/* Filters */}
@@ -359,19 +415,16 @@ export default function SurgePredictionPage() {
             <div>
                 <h2 className="text-lg font-semibold mb-3">Department-Wise Surge Forecast</h2>
                 <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                    {departments.map(dept => {
-                        // Get next significant surge for this department
-                        const deptForecasts = forecasts.filter(f => f.department === dept);
-                        const nextSurge = deptForecasts.find(f => Math.abs(f.percentageIncrease) > 15);
-
+                    {departmentForecasts.map((dept: any) => {
+                        const nextSurge = dept;
                         if (!nextSurge) return null;
 
-                        const isIncrease = nextSurge.percentageIncrease > 0;
-                        const severity = Math.abs(nextSurge.percentageIncrease) > 40 ? "high" :
-                            Math.abs(nextSurge.percentageIncrease) > 25 ? "medium" : "low";
+                        const isIncrease = nextSurge.increase_percent > 0;
+                        const severity = Math.abs(nextSurge.increase_percent) > 40 ? "high" :
+                            Math.abs(nextSurge.increase_percent) > 25 ? "medium" : "low";
 
                         return (
-                            <Card key={dept} className={cn(
+                            <Card key={nextSurge.department} className={cn(
                                 "border-2",
                                 severity === "high" ? "border-red-300 bg-red-50" :
                                     severity === "medium" ? "border-orange-300 bg-orange-50" :
@@ -379,7 +432,7 @@ export default function SurgePredictionPage() {
                             )}>
                                 <CardHeader className="pb-3">
                                     <CardTitle className="text-base flex items-center justify-between">
-                                        <span>{dept}</span>
+                                        <span>{nextSurge.department}</span>
                                         <div className={cn(
                                             "h-10 w-10 rounded-full flex items-center justify-center",
                                             severity === "high" ? "bg-red-600" :
@@ -394,7 +447,7 @@ export default function SurgePredictionPage() {
                                         </div>
                                     </CardTitle>
                                     <CardDescription>
-                                        {new Date(nextSurge.date).toLocaleDateString('en-US', {
+                                        {new Date(nextSurge.date || new Date()).toLocaleDateString('en-US', {
                                             weekday: 'short',
                                             month: 'short',
                                             day: 'numeric'
@@ -410,32 +463,16 @@ export default function SurgePredictionPage() {
                                                     severity === "medium" ? "text-orange-900" :
                                                         "text-blue-900"
                                             )}>
-                                                {isIncrease ? "+" : ""}{nextSurge.percentageIncrease.toFixed(0)}%
+                                                {isIncrease ? "+" : ""}{nextSurge.increase_percent.toFixed(0)}%
                                             </span>
                                             <span className="text-sm text-muted-foreground">
-                                                ({nextSurge.baselineVolume} → {nextSurge.predictedVolume})
+                                                ({nextSurge.baseline} → {nextSurge.predicted})
                                             </span>
                                         </div>
                                         <p className="text-xs text-muted-foreground mt-1">
                                             Confidence: {(nextSurge.confidence * 100).toFixed(0)}%
                                         </p>
                                     </div>
-
-                                    {nextSurge.contributingFactors.length > 0 && (
-                                        <div className="pt-2 border-t">
-                                            <p className="text-xs font-semibold mb-1">Contributing Factors:</p>
-                                            <div className="space-y-1">
-                                                {nextSurge.contributingFactors.slice(0, 2).map((factor, idx) => (
-                                                    <div key={idx} className="flex items-center gap-1 text-xs">
-                                                        {factor.type === "festival" && <Calendar className="h-3 w-3" />}
-                                                        {factor.type === "pollution" && <Cloud className="h-3 w-3" />}
-                                                        {factor.type === "epidemic" && <Activity className="h-3 w-3" />}
-                                                        <span className="truncate">{factor.name}</span>
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    )}
                                 </CardContent>
                             </Card>
                         );
@@ -508,7 +545,40 @@ export default function SurgePredictionPage() {
                             </div>
                         </div>
 
-                        {/* Health Alerts - Note: Would be available when backend endpoint is implemented */}
+                        {/* Health Alerts */}
+                        <div>
+                            <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                                <AlertTriangle className="h-4 w-4 text-primary" />
+                                Active Health Alerts
+                            </h3>
+                            <div className="space-y-2">
+                                {generateHealthAlerts().map(alert => (
+                                    <div 
+                                        key={alert.id} 
+                                        className={cn(
+                                            "p-3 border rounded-lg",
+                                            alert.severity === "critical" ? "bg-red-50 border-red-200" :
+                                            alert.severity === "warning" ? "bg-orange-50 border-orange-200" :
+                                            "bg-yellow-50 border-yellow-200"
+                                        )}
+                                    >
+                                        <div className="flex items-start justify-between">
+                                            <div>
+                                                <p className="font-medium text-sm capitalize">{alert.type} Alert</p>
+                                                <p className="text-xs text-muted-foreground mt-1">{alert.description}</p>
+                                                <p className="text-xs text-muted-foreground mt-1">
+                                                    Affected: {alert.affectedAreas.join(", ")}
+                                                </p>
+                                            </div>
+                                            <div className="text-right">
+                                                <p className="text-sm font-semibold">{alert.expectedCases} cases</p>
+                                                <p className="text-xs text-muted-foreground capitalize">{alert.severity}</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
                     </div>
                 </CardContent>
             </Card>

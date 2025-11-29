@@ -9,7 +9,7 @@ from app.core.database import get_db
 from app.core.dependencies import get_current_user, get_current_doctor, get_current_admin
 from app.core.logging_config import get_logger
 from app.models.user import User
-from app.services.ai_agents import DoctorAgent, SurgeAgent, AdminAgent
+from app.services.ai_agents import DoctorAgent, SurgeAgent, AdminAgent, OperationsAgent
 from app.services.ai_agents_langgraph import PatientAgentLangGraph
 from openai import OpenAI
 from app.core.config import settings
@@ -104,7 +104,9 @@ async def admin_query(
 ):
     """Admin natural language Q&A"""
     agent = AdminAgent(db)
-    result = await agent.process_query(request.query)
+    # Get hospital_id from current_user if available
+    hospital_id = current_user.hospital_id if hasattr(current_user, 'hospital_id') else None
+    result = await agent.process_query(request.query, hospital_id=hospital_id)
     return result
 
 

@@ -22,4 +22,5 @@ class Hospital(Base):
 
     # Relationships
     users = relationship("User", back_populates="hospital")
+    recommendations = relationship("Recommendation", back_populates="hospital")
 
